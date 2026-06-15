@@ -1,0 +1,9 @@
+pandas
+numpy
+sqlalchemy
+psycopg2-binary
+duckdb
+prefect
+dbt-duckdb
+soda-core-duckdb
+streamlit

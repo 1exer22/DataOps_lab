@@ -1,0 +1,111 @@
+# ============================================================
+# NIVEAU 1 — Source (MinIO / Postgres) -> DuckDB Staging
+#
+# But : detecter immediatement si un fichier uploade
+# n'a pas les bonnes colonnes, les bons types ou
+# des valeurs manquantes sur les cles metier.
+# Si ces checks echouent, le pipeline doit s'arreter.
+# ============================================================
+
+checks for main_staging.stg_customers:
+  - schema:
+      name: "colonnes attendues stg_customers"
+      fail:
+        when missing column:
+          - customer_id
+          - country
+          - signup_date
+          - segment
+  - row_count > 0:
+      name: "stg_customers non vide"
+  - missing_count(customer_id) = 0:
+      name: "customer_id jamais nul"
+  - duplicate_count(customer_id) = 0:
+      name: "customer_id unique (cle primaire)"
+  - invalid_count(segment) = 0:
+      name: "segment dans les valeurs admissibles"
+      valid values: [retail, enterprise, vip]
+  - invalid_count(country) = 0:
+      name: "pays dans les valeurs admissibles"
+      valid values: [FR, DE, US, UK, ES]
+
+
+checks for main_staging.stg_orders:
+  - schema:
+      name: "colonnes attendues stg_orders"
+      fail:
+        when missing column:
+          - order_id
+          - customer_id
+          - store_id
+          - order_date
+          - status
+  - row_count > 0:
+      name: "stg_orders non vide"
+  - missing_count(order_id) = 0:
+      name: "order_id jamais nul"
+  - duplicate_count(order_id) = 0:
+      name: "order_id unique (cle primaire)"
+  - missing_count(customer_id) = 0:
+      name: "customer_id jamais nul (cle etrangere)"
+  - missing_count(order_date) = 0:
+      name: "order_date jamais nul"
+  - invalid_count(status) = 0:
+      name: "statut dans les valeurs admissibles"
+      valid values: [pending, shipped, cancelled]
+
+
+checks for main_staging.stg_order_items:
+  - schema:
+      name: "colonnes attendues stg_order_items"
+      fail:
+        when missing column:
+          - item_id
+          - order_id
+          - product_id
+          - quantity
+          - unit_price
+  - row_count > 0:
+      name: "stg_order_items non vide"
+  - missing_count(order_id) = 0:
+      name: "order_id jamais nul"
+  - missing_count(product_id) = 0:
+      name: "product_id jamais nul"
+  - missing_count(quantity) = 0:
+      name: "quantity jamais nul"
+  - missing_count(unit_price) = 0:
+      name: "unit_price jamais nul"
+  - min(quantity):
+      name: "quantity >= 1"
+      fail:
+        when_lt: 1
+  - min(unit_price):
+      name: "alerte unit_price negatif (anomalie injectee)"
+      warn:
+        when_lt: 0
+
+
+checks for main_staging.stg_products:
+  - schema:
+      name: "colonnes attendues stg_products"
+      fail:
+        when missing column:
+          - product_id
+          - name
+          - category
+          - cost
+  - row_count > 0:
+      name: "stg_products non vide"
+  - missing_count(product_id) = 0:
+      name: "product_id jamais nul"
+  - duplicate_count(product_id) = 0:
+      name: "product_id unique (cle primaire)"
+  - missing_count(name) = 0:
+      name: "name produit jamais nul"
+  - invalid_count(category) = 0:
+      name: "categorie dans les valeurs admissibles"
+      valid values: [electronics, clothing, sports, home]
+  - min(cost):
+      name: "cout produit positif"
+      fail:
+        when_lt: 0

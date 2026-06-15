@@ -1,0 +1,76 @@
+version: 2
+
+models:
+
+  - name: mart_orders_summary
+    description: "Une ligne par commande — enrichie avec les infos client et les totaux."
+    columns:
+
+      - name: order_id
+        description: "Identifiant unique de la commande"
+        data_tests:
+          - unique
+          - not_null
+
+      - name: order_date
+        description: "Date de la commande"
+        data_tests:
+          - not_null
+
+      - name: status
+        description: "Statut de la commande"
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [pending, shipped, cancelled]
+
+      - name: customer_country
+        description: "Pays du client"
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [FR, DE, US, UK, ES]
+
+      - name: customer_segment
+        description: "Segment du client"
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [retail, enterprise, vip]
+
+      - name: nb_products
+        description: "Nombre de produits dans la commande"
+        data_tests:
+          - not_null
+
+      - name: total_amount
+        description: "Montant total de la commande (0 si aucun item)"
+        data_tests:
+          - not_null
+
+
+  - name: mart_revenue_by_category
+    description: "Agrégat du CA par catégorie de produit."
+    columns:
+
+      - name: product_category
+        description: "Catégorie de produit"
+        data_tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [electronics, clothing, sports, home]
+
+      - name: nb_orders
+        description: "Nombre de commandes distinctes pour cette catégorie"
+        data_tests:
+          - not_null
+
+      - name: total_revenue
+        description: "Chiffre d'affaires total pour cette catégorie"
+        data_tests:
+          - not_null

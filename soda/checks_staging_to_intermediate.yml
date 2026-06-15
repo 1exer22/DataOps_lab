@@ -1,0 +1,120 @@
+# ============================================================
+# NIVEAU 1 — Staging → Intermediate
+# Vérifie que les vues intermédiaires enrichissent
+# correctement les données brutes de staging.
+# ============================================================
+
+# ── int_orders_enriched (orders LEFT JOIN customers) ────────
+
+checks for main_intermediate.int_orders_enriched:
+
+  # Structure : toutes les colonnes attendues sont présentes
+  - schema:
+      name: "schema int_orders_enriched"
+      fail:
+        when missing column:
+          - order_id
+          - customer_id
+          - store_id
+          - order_date
+          - status
+          - customer_country
+          - customer_segment
+          - customer_signup_date
+
+  # Volume : la jointure ne doit pas perdre de lignes par rapport au staging
+  - row_count:
+      name: "volume identique au staging orders"
+      fail:
+        when not between: [190, 210]
+
+  # Unicité : un order_id ne peut apparaître qu'une seule fois
+  - duplicate_count(order_id) = 0:
+      name: "order_id unique"
+
+  # Complétude : clés nulles interdites
+  - missing_count(order_id) = 0:
+      name: "order_id non nul"
+
+  - missing_count(customer_id) = 0:
+      name: "customer_id non nul"
+
+  - missing_count(order_date) = 0:
+      name: "order_date non nul"
+
+  # Intégrité de la jointure : la jointure LEFT doit avoir résolu le pays
+  - missing_count(customer_country) = 0:
+      name: "customer_country renseigné après jointure"
+
+  - missing_count(customer_segment) = 0:
+      name: "customer_segment renseigné après jointure"
+
+  # Valeurs admissibles — statut
+  - invalid_count(status) = 0:
+      name: "statut commande valide"
+      valid values: [pending, shipped, cancelled]
+
+  # Valeurs admissibles — segment
+  - invalid_count(customer_segment) = 0:
+      name: "segment client valide"
+      valid values: [retail, enterprise, vip]
+
+  # Valeurs admissibles — pays
+  - invalid_count(customer_country) = 0:
+      name: "pays client valide"
+      valid values: [FR, DE, US, UK, ES]
+
+
+# ── int_order_items_enriched (order_items LEFT JOIN products) ─
+
+checks for main_intermediate.int_order_items_enriched:
+
+  # Structure
+  - schema:
+      name: "schema int_order_items_enriched"
+      fail:
+        when missing column:
+          - order_id
+          - product_id
+          - quantity
+          - unit_price
+          - total_price
+          - product_name
+          - product_category
+
+  # Volume : doit correspondre au staging order_items
+  - row_count:
+      name: "volume identique au staging order_items"
+      fail:
+        when not between: [490, 510]
+
+  # Complétude
+  - missing_count(order_id) = 0:
+      name: "order_id non nul"
+
+  - missing_count(product_id) = 0:
+      name: "product_id non nul"
+
+  - missing_count(product_name) = 0:
+      name: "product_name renseigné après jointure"
+
+  - missing_count(product_category) = 0:
+      name: "product_category renseigné après jointure"
+
+  # Cohérence du calcul : total_price doit être positif
+  # (l'anomalie injectée peut produire un total_price négatif)
+  - min(total_price):
+      name: "alerte total_price négatif"
+      warn:
+        when < 0
+
+  # Valeurs admissibles — catégorie produit
+  - invalid_count(product_category) = 0:
+      name: "catégorie produit valide"
+      valid values: [electronics, clothing, sports, home]
+
+  # Quantités : toujours >= 1
+  - min(quantity):
+      name: "quantité minimale >= 1"
+      fail:
+        when < 1

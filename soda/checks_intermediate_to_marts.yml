@@ -1,0 +1,114 @@
+# ============================================================
+# NIVEAU 2 — Intermediate → Marts
+# Vérifie que les agrégations des marts sont cohérentes
+# avec les vues intermédiaires qui les alimentent.
+# ============================================================
+
+# ── mart_orders_summary ──────────────────────────────────────
+
+checks for main_marts.mart_orders_summary:
+
+  # Structure
+  - schema:
+      name: "schema mart_orders_summary"
+      fail:
+        when missing column:
+          - order_id
+          - order_date
+          - status
+          - customer_country
+          - customer_segment
+          - nb_products
+          - total_amount
+
+  # Volume : 1 ligne par commande, pas de perte à l'agrégation
+  - row_count:
+      name: "volume mart = volume intermediate orders"
+      fail:
+        when not between: [190, 210]
+
+  # Unicité : GROUP BY order_id → pas de doublons
+  - duplicate_count(order_id) = 0:
+      name: "order_id unique dans le mart"
+
+  # Complétude
+  - missing_count(order_id) = 0:
+      name: "order_id non nul"
+
+  - missing_count(total_amount) = 0:
+      name: "total_amount non nul"
+
+  - missing_count(nb_products) = 0:
+      name: "nb_products non nul"
+
+  # Cohérence : au moins 1 produit par commande
+  - min(nb_products):
+      name: "chaque commande a au moins 1 produit"
+      fail:
+        when < 1
+
+  # Cohérence : total_amount doit être > 0
+  # (warn si négatif à cause de l'anomalie de prix)
+  - min(total_amount):
+      name: "alerte total_amount négatif"
+      warn:
+        when < 0
+
+  # Valeurs admissibles
+  - invalid_count(status) = 0:
+      name: "statut valide dans le mart"
+      valid values: [pending, shipped, cancelled]
+
+  - invalid_count(customer_segment) = 0:
+      name: "segment valide dans le mart"
+      valid values: [retail, enterprise, vip]
+
+  - invalid_count(customer_country) = 0:
+      name: "pays valide dans le mart"
+      valid values: [FR, DE, US, UK, ES]
+
+
+# ── mart_revenue_by_category ─────────────────────────────────
+
+checks for main_marts.mart_revenue_by_category:
+
+  # Structure
+  - schema:
+      name: "schema mart_revenue_by_category"
+      fail:
+        when missing column:
+          - product_category
+          - nb_orders
+          - total_revenue
+
+  # Volume : exactement 4 catégories de produits
+  - row_count = 4:
+      name: "4 catégories de produits attendues"
+
+  # Unicité : une ligne par catégorie
+  - duplicate_count(product_category) = 0:
+      name: "product_category unique"
+
+  # Complétude
+  - missing_count(product_category) = 0:
+      name: "product_category non nul"
+
+  - missing_count(total_revenue) = 0:
+      name: "total_revenue non nul"
+
+  # Cohérence : revenus > 0 pour chaque catégorie
+  - min(total_revenue):
+      name: "total_revenue positif par catégorie"
+      fail:
+        when < 0
+
+  # Cohérence : au moins 1 commande par catégorie
+  - min(nb_orders):
+      name: "nb_orders >= 1 par catégorie"
+      fail:
+        when < 1
+
+  # Valeurs admissibles
+  - invalid_count(product_category) = 0:
+      name: "catégorie produit valide"
+      valid values: [electronics, clothing, sports, home]

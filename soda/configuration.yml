@@ -1,0 +1,4 @@
+data_sources:
+  warehouse:
+    type: duckdb
+    path: ../warehouse.duckdb
