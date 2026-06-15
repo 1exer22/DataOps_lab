@@ -13,3 +13,5 @@ dbt_project/logs/
 *.duckdb
 inspect_db.py
 dbt_project.yml
+demo_bad_file.py
+last_run.json

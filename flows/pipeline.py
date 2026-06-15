@@ -2,15 +2,15 @@
 Orchestrateur complet du pipeline DataOps.
 
 Etapes :
-  1. Ingestion  — MinIO + Postgres -> DuckDB staging  (ingestion_flow.py)
-  2. Qualite    — Soda checks sur le staging           (run_soda.py niveau 1)
-  3. Transform  — dbt run                              (models staging/intermediate/marts)
-  4. Tests dbt  — dbt test                             (schema.yml)
-  5. Rapport    — ecrit last_run.json pour Streamlit
+  1. Ingestion  - MinIO + Postgres -> DuckDB staging  (ingestion_flow.py)
+  2. Qualite    - Soda checks sur le staging           (run_soda.py niveau 1)
+  3. Transform  - dbt run                              (models staging/intermediate/marts)
+  4. Tests dbt  - dbt test                             (schema.yml)
+  5. Rapport    - ecrit last_run.json pour Streamlit
 
-Usage :
-  python pipeline.py              # pipeline complet
-  python pipeline.py --skip-ingest  # saute l'ingestion (donnees deja en staging)
+Usage (depuis le dossier Tpass) :
+  python flows/pipeline.py
+  python flows/pipeline.py --skip-ingest
 """
 
 import argparse
@@ -20,7 +20,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-ROOT    = Path(__file__).parent
+# flows/pipeline.py -> parent = flows/ -> parent = Tpass/
+ROOT    = Path(__file__).parent.parent
 DBT_DIR = ROOT / "dbt_project"
 REPORT  = ROOT / "last_run.json"
 PYTHON  = ROOT / "venv" / "Scripts" / "python.exe"
@@ -41,17 +42,16 @@ def banner(title: str):
     print(f"{BOLD}{'='*60}{RESET}")
 
 
-def run(cmd: list, cwd: Path = ROOT, label: str = "") -> int:
+def run_cmd(cmd: list, cwd: Path = ROOT) -> int:
     print(f"\n  $ {' '.join(str(c) for c in cmd)}")
-    result = subprocess.run(cmd, cwd=str(cwd))
-    return result.returncode
+    return subprocess.run(cmd, cwd=str(cwd)).returncode
 
 
 def write_report(steps: dict):
     report = {
         "last_run": datetime.now().isoformat(timespec="seconds"),
         "steps": steps,
-        "status": "OK" if all(v == "OK" for v in steps.values()) else "ECHEC",
+        "status": "OK" if all(v in ("OK", "SKIP") for v in steps.values()) else "ECHEC",
     }
     REPORT.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\n  Rapport ecrit -> {REPORT.name}")
@@ -60,26 +60,35 @@ def write_report(steps: dict):
 # ── etapes ────────────────────────────────────────────────────────────────────
 
 def step_ingestion() -> str:
-    banner("ETAPE 1 — Ingestion (MinIO + Postgres -> DuckDB staging)")
-    code = run([str(PYTHON), str(ROOT / "flows" / "ingestion_flow.py")])
-    return "OK" if code == 0 else "ECHEC"
+    banner("ETAPE 1 - Ingestion (MinIO + Postgres -> DuckDB staging)")
+    # Import et appel direct de ingestion_flow pour reutiliser le fichier existant
+    sys.path.insert(0, str(ROOT / "flows"))
+    try:
+        from ingestion_flow import ingestion_flow
+        ingestion_flow()
+        return "OK"
+    except Exception as e:
+        print(f"\n  {RED}Erreur ingestion : {e}{RESET}")
+        return "ECHEC"
+    finally:
+        sys.path.pop(0)
 
 
 def step_soda() -> str:
-    banner("ETAPE 2 — Qualite des donnees (Soda checks staging)")
-    code = run([str(PYTHON), str(ROOT / "run_soda.py"), "--level", "1"])
+    banner("ETAPE 2 - Qualite des donnees (Soda checks staging)")
+    code = run_cmd([str(PYTHON), str(ROOT / "run_soda.py"), "--level", "1"])
     return "OK" if code == 0 else "ECHEC"
 
 
 def step_dbt_run() -> str:
-    banner("ETAPE 3 — Transformations (dbt run)")
-    code = run([str(DBT), "run"], cwd=DBT_DIR)
+    banner("ETAPE 3 - Transformations (dbt run)")
+    code = run_cmd([str(DBT), "run"], cwd=DBT_DIR)
     return "OK" if code == 0 else "ECHEC"
 
 
 def step_dbt_test() -> str:
-    banner("ETAPE 4 — Tests qualite marts (dbt test)")
-    code = run([str(DBT), "test"], cwd=DBT_DIR)
+    banner("ETAPE 4 - Tests qualite marts (dbt test)")
+    code = run_cmd([str(DBT), "test"], cwd=DBT_DIR)
     return "OK" if code == 0 else "ECHEC"
 
 
@@ -87,11 +96,13 @@ def step_dbt_test() -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-ingest", action="store_true",
-                        help="Saute l'etape d'ingestion (donnees deja en staging)")
+    parser.add_argument(
+        "--skip-ingest", action="store_true",
+        help="Saute l'ingestion si les donnees sont deja en staging"
+    )
     args = parser.parse_args()
 
-    print(f"\n{BOLD}PIPELINE DATAOPS — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
+    print(f"\n{BOLD}PIPELINE DATAOPS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
     steps: dict[str, str] = {}
 
     # 1. Ingestion
@@ -105,7 +116,7 @@ def main():
             write_report(steps)
             sys.exit(1)
 
-    # 2. Soda checks — bloquant si FAIL
+    # 2. Soda checks - bloquant si FAIL
     steps["soda"] = step_soda()
     if steps["soda"] == "ECHEC":
         print(f"\n{RED}{BOLD}  Arret : checks qualite en echec.{RESET}")
@@ -132,7 +143,12 @@ def main():
 
     banner("PIPELINE TERMINE")
     for name, status in steps.items():
-        color = GREEN if status in ("OK", "SKIP") else (YELLOW if status == "ECHEC" and name == "dbt_test" else RED)
+        if status in ("OK", "SKIP"):
+            color = GREEN
+        elif name == "dbt_test":
+            color = YELLOW
+        else:
+            color = RED
         print(f"  {color}{status:6}{RESET}  {name}")
 
     overall_ok = all(v in ("OK", "SKIP") for v in steps.values())
