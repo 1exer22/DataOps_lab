@@ -1,14 +1,17 @@
 """
-Orchestrateur complet du pipeline DataOps.
+Orchestrateur complet du pipeline DataOps — piloté par Prefect.
 
-Etapes :
-  1. Ingestion  - MinIO + Postgres -> DuckDB staging  (ingestion_flow.py)
-  2. Qualite    - Soda checks sur le staging           (run_soda.py niveau 1)
-  3. Transform  - dbt run                              (models staging/intermediate/marts)
-  4. Tests dbt  - dbt test                             (schema.yml)
-  5. Rapport    - ecrit last_run.json pour Streamlit
+Prefect orchestre chaque etape de bout en bout :
+  1. Ingestion  - MinIO + Postgres -> DuckDB staging  (sous-flow Prefect)
+  2. Qualite    - Soda checks sur le staging           (task Prefect)
+  3. Transform  - dbt run                              (task Prefect)
+  4. Tests dbt  - dbt test                             (task Prefect)
+  5. Rapport    - ecrit last_run.json                  (task Prefect)
 
-Usage (depuis le dossier Tpass) :
+Prerequis : serveur Prefect demarre
+  prefect server start
+
+Usage :
   python flows/pipeline.py
   python flows/pipeline.py --skip-ingest
 """
@@ -20,6 +23,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from prefect import flow, task, get_run_logger
+from prefect.context import get_run_context
+
 # flows/pipeline.py -> parent = flows/ -> parent = Tpass/
 ROOT    = Path(__file__).parent.parent
 DBT_DIR = ROOT / "dbt_project"
@@ -27,134 +33,134 @@ REPORT  = ROOT / "last_run.json"
 PYTHON  = ROOT / "venv" / "Scripts" / "python.exe"
 DBT     = ROOT / "venv" / "Scripts" / "dbt.exe"
 
-GREEN  = "\033[92m"
-RED    = "\033[91m"
-YELLOW = "\033[93m"
-BOLD   = "\033[1m"
-RESET  = "\033[0m"
+
+# ── tasks Prefect ─────────────────────────────────────────────────────────────
+
+@task(name="soda-checks-staging", retries=1, retry_delay_seconds=10)
+def task_soda() -> bool:
+    logger = get_run_logger()
+    logger.info("Lancement des checks Soda sur le staging...")
+    result = subprocess.run(
+        [str(PYTHON), str(ROOT / "run_soda.py"), "--level", "1"],
+        cwd=str(ROOT),
+        capture_output=False,
+    )
+    if result.returncode != 0:
+        raise Exception("Soda : echec des checks qualite — pipeline bloque.")
+    logger.info("Soda : tous les checks passent.")
+    return True
 
 
-# ── utilitaires ───────────────────────────────────────────────────────────────
+@task(name="dbt-run", retries=1, retry_delay_seconds=10)
+def task_dbt_run() -> bool:
+    logger = get_run_logger()
+    logger.info("dbt run : construction des modeles...")
+    result = subprocess.run(
+        [str(DBT), "run"],
+        cwd=str(DBT_DIR),
+        capture_output=False,
+    )
+    if result.returncode != 0:
+        raise Exception("dbt run : echec de la construction des modeles.")
+    logger.info("dbt run : tous les modeles sont construits.")
+    return True
 
-def banner(title: str):
-    print(f"\n{BOLD}{'='*60}{RESET}")
-    print(f"{BOLD}  {title}{RESET}")
-    print(f"{BOLD}{'='*60}{RESET}")
+
+@task(name="dbt-test")
+def task_dbt_test() -> bool:
+    logger = get_run_logger()
+    logger.info("dbt test : verification de la qualite des marts...")
+    result = subprocess.run(
+        [str(DBT), "test"],
+        cwd=str(DBT_DIR),
+        capture_output=False,
+    )
+    if result.returncode != 0:
+        logger.warning("dbt test : certains tests ont echoue — marts construits mais anomalies detectees.")
+        return False
+    logger.info("dbt test : tous les tests passent.")
+    return True
 
 
-def run_cmd(cmd: list, cwd: Path = ROOT) -> int:
-    print(f"\n  $ {' '.join(str(c) for c in cmd)}")
-    return subprocess.run(cmd, cwd=str(cwd)).returncode
-
-
-def write_report(steps: dict):
+@task(name="ecriture-rapport")
+def task_write_report(steps: dict) -> None:
+    logger = get_run_logger()
     report = {
         "last_run": datetime.now().isoformat(timespec="seconds"),
         "steps": steps,
         "status": "OK" if all(v in ("OK", "SKIP") for v in steps.values()) else "ECHEC",
     }
     REPORT.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"\n  Rapport ecrit -> {REPORT.name}")
+    logger.info(f"Rapport ecrit : {REPORT}")
 
 
-# ── etapes ────────────────────────────────────────────────────────────────────
+# ── flow principal ────────────────────────────────────────────────────────────
 
-def step_ingestion() -> str:
-    banner("ETAPE 1 - Ingestion (MinIO + Postgres -> DuckDB staging)")
-    # Import et appel direct de ingestion_flow pour reutiliser le fichier existant
-    sys.path.insert(0, str(ROOT / "flows"))
+@flow(
+    name="pipeline-dataops",
+    description="Ingestion -> Qualite Soda -> dbt run -> dbt test",
+)
+def pipeline_flow(skip_ingest: bool = False):
+    logger = get_run_logger()
+    steps: dict[str, str] = {}
+
+    # 1. Ingestion — sous-flow Prefect (ingestion_flow.py)
+    if skip_ingest:
+        logger.info("Ingestion ignoree (skip_ingest=True).")
+        steps["ingestion"] = "SKIP"
+    else:
+        logger.info("Etape 1 : ingestion depuis MinIO et Postgres...")
+        sys.path.insert(0, str(ROOT / "flows"))
+        try:
+            from ingestion_flow import ingestion_flow
+            ingestion_flow()
+            steps["ingestion"] = "OK"
+        except Exception as e:
+            steps["ingestion"] = "ECHEC"
+            task_write_report(steps)
+            raise RuntimeError(f"Ingestion echouee : {e}") from e
+        finally:
+            sys.path.pop(0)
+
+    # 2. Soda checks — bloquant
+    logger.info("Etape 2 : checks qualite Soda...")
     try:
-        from ingestion_flow import ingestion_flow
-        ingestion_flow()
-        return "OK"
+        task_soda()
+        steps["soda"] = "OK"
     except Exception as e:
-        print(f"\n  {RED}Erreur ingestion : {e}{RESET}")
-        return "ECHEC"
-    finally:
-        sys.path.pop(0)
+        steps["soda"] = "ECHEC"
+        task_write_report(steps)
+        raise
+
+    # 3. dbt run — bloquant
+    logger.info("Etape 3 : transformations dbt...")
+    try:
+        task_dbt_run()
+        steps["dbt_run"] = "OK"
+    except Exception as e:
+        steps["dbt_run"] = "ECHEC"
+        task_write_report(steps)
+        raise
+
+    # 4. dbt test — non bloquant (warning seulement)
+    logger.info("Etape 4 : tests dbt sur les marts...")
+    dbt_ok = task_dbt_test()
+    steps["dbt_test"] = "OK" if dbt_ok else "ECHEC"
+
+    # 5. Rapport
+    task_write_report(steps)
+
+    logger.info(f"Pipeline termine : {steps}")
+    return steps
 
 
-def step_soda() -> str:
-    banner("ETAPE 2 - Qualite des donnees (Soda checks staging)")
-    code = run_cmd([str(PYTHON), str(ROOT / "run_soda.py"), "--level", "1"])
-    return "OK" if code == 0 else "ECHEC"
+# ── entrypoint ────────────────────────────────────────────────────────────────
 
-
-def step_dbt_run() -> str:
-    banner("ETAPE 3 - Transformations (dbt run)")
-    code = run_cmd([str(DBT), "run"], cwd=DBT_DIR)
-    return "OK" if code == 0 else "ECHEC"
-
-
-def step_dbt_test() -> str:
-    banner("ETAPE 4 - Tests qualite marts (dbt test)")
-    code = run_cmd([str(DBT), "test"], cwd=DBT_DIR)
-    return "OK" if code == 0 else "ECHEC"
-
-
-# ── main ──────────────────────────────────────────────────────────────────────
-
-def main():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--skip-ingest", action="store_true",
         help="Saute l'ingestion si les donnees sont deja en staging"
     )
     args = parser.parse_args()
-
-    print(f"\n{BOLD}PIPELINE DATAOPS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}{RESET}")
-    steps: dict[str, str] = {}
-
-    # 1. Ingestion
-    if args.skip_ingest:
-        print(f"\n{YELLOW}  >> Ingestion ignoree (--skip-ingest){RESET}")
-        steps["ingestion"] = "SKIP"
-    else:
-        steps["ingestion"] = step_ingestion()
-        if steps["ingestion"] == "ECHEC":
-            print(f"\n{RED}{BOLD}  Arret : echec de l ingestion.{RESET}")
-            write_report(steps)
-            sys.exit(1)
-
-    # 2. Soda checks - bloquant si FAIL
-    steps["soda"] = step_soda()
-    if steps["soda"] == "ECHEC":
-        print(f"\n{RED}{BOLD}  Arret : checks qualite en echec.{RESET}")
-        print(f"  Les donnees en staging ne respectent pas le contrat de schema.")
-        print(f"  Corrigez le fichier source et relancez.")
-        write_report(steps)
-        sys.exit(1)
-
-    # 3. dbt run
-    steps["dbt_run"] = step_dbt_run()
-    if steps["dbt_run"] == "ECHEC":
-        print(f"\n{RED}{BOLD}  Arret : dbt run en echec.{RESET}")
-        write_report(steps)
-        sys.exit(1)
-
-    # 4. dbt test
-    steps["dbt_test"] = step_dbt_test()
-    if steps["dbt_test"] == "ECHEC":
-        print(f"\n{YELLOW}{BOLD}  Avertissement : certains tests dbt ont echoue.{RESET}")
-        print(f"  Les marts sont construits mais des anomalies ont ete detectees.")
-
-    # 5. Rapport final
-    write_report(steps)
-
-    banner("PIPELINE TERMINE")
-    for name, status in steps.items():
-        if status in ("OK", "SKIP"):
-            color = GREEN
-        elif name == "dbt_test":
-            color = YELLOW
-        else:
-            color = RED
-        print(f"  {color}{status:6}{RESET}  {name}")
-
-    overall_ok = all(v in ("OK", "SKIP") for v in steps.values())
-    print(f"\n  {GREEN if overall_ok else RED}{BOLD}{'OK' if overall_ok else 'ECHEC'}{RESET}\n")
-    sys.exit(0 if overall_ok else 1)
-
-
-if __name__ == "__main__":
-    main()
+    pipeline_flow(skip_ingest=args.skip_ingest)
