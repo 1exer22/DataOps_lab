@@ -1,16 +1,25 @@
+import json
 import streamlit as st
 import duckdb
 import pandas as pd
 import plotly.express as px
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "warehouse.duckdb"
+DB_PATH   = Path(__file__).parent / "warehouse.duckdb"
+REPORT    = Path(__file__).parent / "last_run.json"
 
 st.set_page_config(
     page_title="DataOps Dashboard",
     page_icon="📊",
     layout="wide",
 )
+
+# ── Rapport du dernier pipeline run ──────────────────────────────────────────
+
+def read_last_run() -> dict | None:
+    if REPORT.exists():
+        return json.loads(REPORT.read_text(encoding="utf-8"))
+    return None
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -38,6 +47,24 @@ rev_cat = load_revenue_by_category()
 
 with st.sidebar:
     st.title("Filtres")
+
+    # ── Statut du dernier pipeline run ───────────────────────────────────────
+    last = read_last_run()
+    if last:
+        color = "green" if last["status"] == "OK" else "red"
+        st.markdown(f"**Dernier run :** :{color}[{last['status']}]")
+        st.caption(last["last_run"])
+        for step, status in last["steps"].items():
+            icon = "✅" if status in ("OK", "SKIP") else ("⚠️" if step == "dbt_test" else "❌")
+            st.caption(f"{icon} {step} : {status}")
+    else:
+        st.caption("Aucun run pipeline detecte.")
+
+    if st.button("Rafraichir les donnees"):
+        st.cache_data.clear()
+        st.rerun()
+
+    st.divider()
 
     date_min = orders_raw["order_date"].min().date()
     date_max = orders_raw["order_date"].max().date()

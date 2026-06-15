@@ -8,36 +8,39 @@ Mode restore : python demo_bad_file.py --restore
 import sys
 import duckdb
 
-DB = "warehouse.duckdb"
+DB  = "warehouse.duckdb"
+# Definition originale generee par dbt
+ORIGINAL_VIEW = "SELECT * FROM staging.customers"
+
 con = duckdb.connect(DB)
 
 if "--restore" in sys.argv:
-    print(">>> Restauration depuis la sauvegarde...")
-    con.execute("""
-        CREATE OR REPLACE VIEW main_staging.stg_customers AS
-        SELECT * FROM main_staging._stg_customers_backup
-    """)
+    print(">>> Restauration de la vue originale stg_customers...")
+    con.execute(f"CREATE OR REPLACE VIEW main_staging.stg_customers AS {ORIGINAL_VIEW}")
     con.execute("DROP TABLE IF EXISTS main_staging._stg_customers_backup")
-    print(">>> Restauration OK. Lance : python run_soda.py pour verifier.")
+    print(">>> Restauration OK.")
+    print("    Verification : python run_soda.py")
 else:
-    print(">>> Sauvegarde de stg_customers originale...")
+    print(">>> Sauvegarde des donnees originales...")
     con.execute("""
-        CREATE OR REPLACE TABLE main_staging._stg_customers_backup
-        AS SELECT * FROM main_staging.stg_customers
+        CREATE OR REPLACE TABLE main_staging._stg_customers_backup AS
+        SELECT customer_id, country, signup_date, segment
+        FROM staging.customers
     """)
-    print(">>> Remplacement par un fichier avec de mauvaises colonnes...")
+    print(">>> Corruption : renommage des colonnes...")
     print("    Avant : customer_id, country, signup_date, segment")
     print("    Apres : id, region, created_at, tier")
     con.execute("""
         CREATE OR REPLACE VIEW main_staging.stg_customers AS
         SELECT
-            customer_id  AS id,
-            country      AS region,
-            signup_date  AS created_at,
-            segment      AS tier
+            customer_id AS id,
+            country     AS region,
+            signup_date AS created_at,
+            segment     AS tier
         FROM main_staging._stg_customers_backup
     """)
-    print(">>> Corruption OK. Lance : python run_soda.py")
-    print("    Puis : python demo_bad_file.py --restore")
+    print(">>> Corruption OK.")
+    print("    Lance : python run_soda.py")
+    print("    Puis  : python demo_bad_file.py --restore")
 
 con.close()
